@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1-rc1"
 CONFIG_DIR="/etc/autossl"
 CONFIG_FILE="$CONFIG_DIR/autossl.conf"
 CRED_FILE="$CONFIG_DIR/credentials.conf"
@@ -30,6 +30,36 @@ valid_email(){ [[ "$1" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; }
 need_root(){ [ "${EUID}" -eq 0 ] || { echo "Run as root."; exit 1; }; }
 load_config(){ [ -f "$CONFIG_FILE" ] || { echo "Missing config. Run: autossl setup"; exit 1; }; source "$CONFIG_FILE"; }
 load_creds(){ [ -f "$CRED_FILE" ] || { echo "Missing credentials. Run: autossl setup"; exit 1; }; source "$CRED_FILE"; }
+
+tty_read(){
+  local __var="$1" prompt="$2" default="${3:-}" input=""
+  if [ -r /dev/tty ]; then
+    if [ -n "$default" ]; then
+      read -r -p "$prompt [$default]: " input < /dev/tty || input=""
+    else
+      read -r -p "$prompt: " input < /dev/tty || input=""
+    fi
+  else
+    if [ -n "$default" ]; then
+      read -r -p "$prompt [$default]: " input || input=""
+    else
+      read -r -p "$prompt: " input || input=""
+    fi
+  fi
+  printf -v "$__var" '%s' "${input:-$default}"
+}
+
+tty_secret(){
+  local __var="$1" prompt="$2" input=""
+  if [ -r /dev/tty ]; then
+    read -r -s -p "$prompt: " input < /dev/tty || input=""
+    echo > /dev/tty
+  else
+    read -r -s -p "$prompt: " input || input=""
+    echo
+  fi
+  printf -v "$__var" '%s' "$input"
+}
 
 backup_existing(){
   mkdir -p "$BACKUP_DIR"
@@ -64,14 +94,15 @@ detect_reload(){
 }
 
 choose_ca(){
+  local ca_choice=""
   echo "Select default CA:"
   echo "1) Let's Encrypt (recommended)"
   echo "2) ZeroSSL"
-  read -r -p "Choice [1]: " ca_choice
-  case "${ca_choice:-1}" in
-    1) echo "letsencrypt" ;;
-    2) echo "zerossl" ;;
-    *) echo "Invalid CA choice." >&2; return 1 ;;
+  tty_read ca_choice "Choice" "1"
+  case "$ca_choice" in
+    1) DEFAULT_CA="letsencrypt" ;;
+    2) DEFAULT_CA="zerossl" ;;
+    *) echo "Invalid CA choice."; exit 1 ;;
   esac
 }
 
@@ -88,17 +119,16 @@ setup(){
   chmod 700 "$CONFIG_DIR" "$BACKUP_DIR" /etc/ssl/acme
   backup_existing
 
-  while true; do read -r -p "ACME account email: " EMAIL; valid_email "$EMAIL" && break; echo "Invalid email."; done
-  while true; do read -r -p "Delegated alias zone, e.g. myautossl.com: " ALIAS_ZONE; valid_domain "$ALIAS_ZONE" && break; echo "Invalid domain."; done
+  while true; do tty_read EMAIL "ACME account email"; valid_email "$EMAIL" && break; echo "Invalid email."; done
+  while true; do tty_read ALIAS_ZONE "Delegated alias zone, e.g. myautossl.com"; valid_domain "$ALIAS_ZONE" && break; echo "Invalid domain."; done
   PROVIDER="cloudflare"
   DNS_PLUGIN="dns_cf"
-  DEFAULT_CA="$(choose_ca)"
+  choose_ca
   DEFAULT_RELOAD="$(detect_reload)"
   echo "Detected reload command: $DEFAULT_RELOAD"
-  read -r -p "Reload command [$DEFAULT_RELOAD]: " RELOADCMD
-  RELOADCMD="${RELOADCMD:-$DEFAULT_RELOAD}"
-  read -r -p "Cloudflare API token for $ALIAS_ZONE: " CF_Token
-  read -r -p "Cloudflare Zone ID for $ALIAS_ZONE: " CF_Zone_ID
+  tty_read RELOADCMD "Reload command" "$DEFAULT_RELOAD"
+  while true; do tty_secret CF_Token "Cloudflare API token for $ALIAS_ZONE"; [ -n "$CF_Token" ] && break; echo "Token cannot be empty."; done
+  while true; do tty_read CF_Zone_ID "Cloudflare Zone ID for $ALIAS_ZONE"; [ -n "$CF_Zone_ID" ] && break; echo "Zone ID cannot be empty."; done
 
   if [ ! -x /root/.acme.sh/acme.sh ]; then curl https://get.acme.sh | sh -s email="$EMAIL"; fi
   /root/.acme.sh/acme.sh --set-default-ca --server "$DEFAULT_CA"
@@ -157,7 +187,7 @@ check_domain(){
 issue_domain(){
   need_root; parse_domain "$@"; load_config; load_creds; export_provider_creds
   check_domain "$DOMAIN" || true
-  if [ "$YES" != "yes" ]; then read -r -p "Type yes to continue issuing certificate: " ans; [ "$ans" = "yes" ] || exit 1; fi
+  if [ "$YES" != "yes" ]; then tty_read ans "Type yes to continue issuing certificate"; [ "$ans" = "yes" ] || exit 1; fi
   mkdir -p "$SSL_BASE/$DOMAIN"
   "$ACME_BIN" --issue --dns "$DNS_PLUGIN" -d "$DOMAIN" -d "*.$DOMAIN" --challenge-alias "$DOMAIN.$ALIAS_ZONE" --server "$DEFAULT_CA" $STAGING $FORCE
   "$ACME_BIN" --install-cert -d "$DOMAIN" --key-file "$SSL_BASE/$DOMAIN/privkey.pem" --fullchain-file "$SSL_BASE/$DOMAIN/fullchain.pem" --reloadcmd "$RELOADCMD"
