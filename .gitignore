@@ -1,0 +1,17 @@
+# OS/editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Shell/runtime temp files
+*.log
+*.tmp
+*.bak
+
+# Never commit local credentials
+credentials.conf
+autossl.conf
+*.pem
+*.key
+*.crt
+*.cer
