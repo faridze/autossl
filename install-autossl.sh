@@ -8,21 +8,31 @@ fi
 
 INSTALL_PATH="/usr/local/bin/autossl"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKUP_DIR="/etc/autossl/backups"
 
 if [ ! -f "$SCRIPT_DIR/autossl" ]; then
   echo "autossl file not found in current directory."
   exit 1
 fi
 
+mkdir -p /etc/autossl /etc/ssl/acme "$BACKUP_DIR"
+chmod 700 /etc/autossl /etc/ssl/acme "$BACKUP_DIR"
+
+if [ -f "$INSTALL_PATH" ]; then
+  TS="$(date +%Y%m%d-%H%M%S)"
+  cp -a "$INSTALL_PATH" "$BACKUP_DIR/autossl.$TS.bak"
+  echo "Previous AutoSSL saved to $BACKUP_DIR/autossl.$TS.bak"
+fi
+
 install -m 755 "$SCRIPT_DIR/autossl" "$INSTALL_PATH"
-mkdir -p /etc/autossl /etc/ssl/acme
-chmod 700 /etc/autossl /etc/ssl/acme
 
 echo "AutoSSL installed to $INSTALL_PATH"
+echo "Installed version: $($INSTALL_PATH version 2>/dev/null || true)"
 echo
 echo "Next step:"
 echo "  sudo autossl setup"
 echo
 echo "Then use:"
+echo "  autossl doctor"
 echo "  autossl check -d domain.com"
-echo "  autossl issue -d domain.com"
+echo "  autossl issue -d domain.com --staging"
