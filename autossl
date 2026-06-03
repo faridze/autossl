@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+VERSION="1.0.0"
+CONFIG_FILE="/etc/autossl/autossl.conf"
+CRED_FILE="/etc/autossl/credentials.conf"
+
+usage(){ cat <<USAGE
+AutoSSL - acme.sh delegated DNS challenge helper
+
+Usage:
+  autossl setup
+  autossl check -d domain.com
+  autossl issue -d domain.com [--staging] [--force] [-y]
+  autossl renew -d domain.com [--force]
+  autossl remove -d domain.com
+  autossl list
+  autossl doctor
+  autossl version
+
+Supported provider in v1.0: cloudflare
+Designed to allow more providers later.
+USAGE
+}
+
+valid_domain(){ [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]]; }
+valid_email(){ [[ "$1" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; }
+need_root(){ [ "${EUID}" -eq 0 ] || { echo "Run as root."; exit 1; }; }
+load_config(){ [ -f "$CONFIG_FILE" ] || { echo "Missing config. Run: autossl setup"; exit 1; }; source "$CONFIG_FILE"; }
+load_creds(){ [ -f "$CRED_FILE" ] || { echo "Missing credentials. Run: autossl setup"; exit 1; }; source "$CRED_FILE"; }
+
+install_pkgs(){
+  if command -v apt >/dev/null 2>&1; then apt update && DEBIAN_FRONTEND=noninteractive apt install -y curl socat cron openssl ca-certificates jq dnsutils && systemctl enable --now cron || true
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y curl socat cronie openssl ca-certificates jq bind-utils && systemctl enable --now crond || true
+  elif command -v yum >/dev/null 2>&1; then yum install -y curl socat cronie openssl ca-certificates jq bind-utils && systemctl enable --now crond || true
+  else echo "Unsupported OS. Install curl socat cron openssl jq dig manually."; exit 1; fi
+}
+
+detect_reload(){
+  if [ -x /usr/local/lsws/bin/lswsctrl ]; then echo "/usr/local/lsws/bin/lswsctrl restart"
+  elif systemctl list-unit-files 2>/dev/null | grep -q '^nginx'; then echo "systemctl reload nginx"
+  elif systemctl list-unit-files 2>/dev/null | grep -q '^apache2'; then echo "systemctl reload apache2"
+  elif systemctl list-unit-files 2>/dev/null | grep -q '^httpd'; then echo "systemctl reload httpd"
+  else echo "true"; fi
+}
+
+setup(){
+  need_root
+  install_pkgs
+  mkdir -p /etc/autossl /etc/ssl/acme
+  chmod 700 /etc/autossl /etc/ssl/acme
+  while true; do read -r -p "ACME account email: " EMAIL; valid_email "$EMAIL" && break; echo "Invalid email."; done
+  while true; do read -r -p "Delegated alias zone, e.g. myautossl.com: " ALIAS_ZONE; valid_domain "$ALIAS_ZONE" && break; echo "Invalid domain."; done
+  PROVIDER="cloudflare"
+  DEFAULT_RELOAD="$(detect_reload)"
+  echo "Detected reload command: $DEFAULT_RELOAD"
+  read -r -p "Reload command [$DEFAULT_RELOAD]: " RELOADCMD
+  RELOADCMD="${RELOADCMD:-$DEFAULT_RELOAD}"
+  read -r -p "Cloudflare API token for $ALIAS_ZONE: " CF_Token
+  read -r -p "Cloudflare Zone ID for $ALIAS_ZONE: " CF_Zone_ID
+  if [ ! -x /root/.acme.sh/acme.sh ]; then curl https://get.acme.sh | sh -s email="$EMAIL"; fi
+  /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+  /root/.acme.sh/acme.sh --install-cronjob || true
+  cat > "$CONFIG_FILE" <<EOF
+ALIAS_ZONE="$ALIAS_ZONE"
+PROVIDER="$PROVIDER"
+DNS_PLUGIN="dns_cf"
+DEFAULT_CA="letsencrypt"
+SSL_BASE="/etc/ssl/acme"
+ACME_BIN="/root/.acme.sh/acme.sh"
+RELOADCMD="$RELOADCMD"
+EOF
+  cat > "$CRED_FILE" <<EOF
+CF_Token="$CF_Token"
+CF_Zone_ID="$CF_Zone_ID"
+EOF
+  chmod 600 "$CONFIG_FILE" "$CRED_FILE"
+  echo "Setup completed. Run: autossl doctor"
+}
+
+export_provider_creds(){
+  case "${PROVIDER:-cloudflare}" in
+    cloudflare) export CF_Token CF_Zone_ID ;;
+    *) echo "Unsupported provider: $PROVIDER"; exit 1 ;;
+  esac
+}
+
+parse_domain(){ DOMAIN=""; FORCE=""; STAGING=""; YES=""; while [ $# -gt 0 ]; do case "$1" in -d|--domain) DOMAIN="${2:-}"; shift 2;; --force) FORCE="--force"; shift;; --staging) STAGING="--staging"; shift;; -y|--yes) YES="yes"; shift;; *) echo "Unknown option: $1"; usage; exit 1;; esac; done; [ -n "$DOMAIN" ] || { usage; exit 1; }; valid_domain "$DOMAIN" || { echo "Invalid domain: $DOMAIN"; exit 1; }; }
+
+check_domain(){
+  load_config
+  local d="$1" src tgt found
+  src="_acme-challenge.$d"; tgt="_acme-challenge.$d.$ALIAS_ZONE"
+  echo "Required DNS record:"
+  echo "  $src CNAME $tgt"
+  found="$(dig +short CNAME "$src" 2>/dev/null | sed 's/\.$//' | tail -n1)"
+  if [ "$found" = "$tgt" ]; then echo "CNAME check: OK"; return 0; fi
+  echo "CNAME check: NOT OK"; echo "Current result: ${found:-empty}"; return 1
+}
+
+issue_domain(){
+  need_root; parse_domain "$@"; load_config; load_creds; export_provider_creds
+  check_domain "$DOMAIN" || true
+  if [ "$YES" != "yes" ]; then read -r -p "Type yes to continue issuing certificate: " ans; [ "$ans" = "yes" ] || exit 1; fi
+  mkdir -p "$SSL_BASE/$DOMAIN"
+  "$ACME_BIN" --issue --dns "$DNS_PLUGIN" -d "$DOMAIN" -d "*.$DOMAIN" --challenge-alias "$DOMAIN.$ALIAS_ZONE" --server "$DEFAULT_CA" $STAGING $FORCE
+  "$ACME_BIN" --install-cert -d "$DOMAIN" --key-file "$SSL_BASE/$DOMAIN/privkey.pem" --fullchain-file "$SSL_BASE/$DOMAIN/fullchain.pem" --reloadcmd "$RELOADCMD"
+  echo "Installed: $SSL_BASE/$DOMAIN/fullchain.pem"
+}
+
+renew_domain(){ need_root; parse_domain "$@"; load_config; load_creds; export_provider_creds; "$ACME_BIN" --renew -d "$DOMAIN" $FORCE; "$ACME_BIN" --install-cert -d "$DOMAIN" --key-file "$SSL_BASE/$DOMAIN/privkey.pem" --fullchain-file "$SSL_BASE/$DOMAIN/fullchain.pem" --reloadcmd "$RELOADCMD"; }
+remove_domain(){ need_root; parse_domain "$@"; load_config; "$ACME_BIN" --remove -d "$DOMAIN" || true; rm -rf "/root/.acme.sh/${DOMAIN}_ecc" "$SSL_BASE/$DOMAIN"; echo "Removed $DOMAIN"; }
+doctor(){ load_config; echo "AutoSSL $VERSION"; echo "Alias zone: $ALIAS_ZONE"; echo "Provider: $PROVIDER"; echo "CA: $DEFAULT_CA"; echo "SSL base: $SSL_BASE"; echo "Reload: $RELOADCMD"; command -v dig >/dev/null && echo "dig: OK" || echo "dig: MISSING"; [ -x "$ACME_BIN" ] && echo "acme.sh: OK" || echo "acme.sh: MISSING"; [ -f "$CRED_FILE" ] && echo "credentials: OK" || echo "credentials: MISSING"; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in setup) setup;; check) parse_domain "$@"; check_domain "$DOMAIN";; issue|"") issue_domain "$@";; renew) renew_domain "$@";; remove) remove_domain "$@";; list) load_config; "$ACME_BIN" --list;; doctor) doctor;; version) echo "$VERSION";; help|-h|--help) usage;; *) echo "Unknown command: $cmd"; usage; exit 1;; esac
