@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.1-rc1"
+VERSION="1.0.1-rc2"
 CONFIG_DIR="/etc/autossl"
 CONFIG_FILE="$CONFIG_DIR/autossl.conf"
 CRED_FILE="$CONFIG_DIR/credentials.conf"
@@ -64,8 +64,13 @@ tty_secret(){
 backup_existing(){
   mkdir -p "$BACKUP_DIR"
   local ts; ts="$(date +%Y%m%d-%H%M%S)"
-  [ -f "$CONFIG_FILE" ] && cp -a "$CONFIG_FILE" "$BACKUP_DIR/autossl.conf.$ts.bak"
-  [ -f "$CRED_FILE" ] && cp -a "$CRED_FILE" "$BACKUP_DIR/credentials.conf.$ts.bak"
+  if [ -f "$CONFIG_FILE" ]; then
+    cp -a "$CONFIG_FILE" "$BACKUP_DIR/autossl.conf.$ts.bak"
+  fi
+  if [ -f "$CRED_FILE" ]; then
+    cp -a "$CRED_FILE" "$BACKUP_DIR/credentials.conf.$ts.bak"
+  fi
+  return 0
 }
 
 install_pkgs(){
