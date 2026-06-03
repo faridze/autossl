@@ -1,0 +1,10 @@
+# AutoSSL example configuration
+# Installed path: /etc/autossl/autossl.conf
+
+ALIAS_ZONE="myautossl.com"
+PROVIDER="cloudflare"
+DNS_PLUGIN="dns_cf"
+DEFAULT_CA="letsencrypt"
+SSL_BASE="/etc/ssl/acme"
+ACME_BIN="/root/.acme.sh/acme.sh"
+RELOADCMD="/usr/local/lsws/bin/lswsctrl restart"
