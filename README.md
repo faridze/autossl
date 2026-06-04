@@ -4,6 +4,8 @@ AutoSSL is a small Bash helper for issuing and installing wildcard SSL certifica
 
 It is designed for setups where you do **not** want to give your SSL automation full DNS access to every production domain. Instead, each real domain delegates only its ACME challenge record to a central alias zone such as `myautossl.com`.
 
+Current stable version: `1.0.0`
+
 ## Features
 
 - Uses `acme.sh`
@@ -46,7 +48,15 @@ The installer copies the `autossl` command to:
 /usr/local/bin/autossl
 ```
 
-Then run:
+Re-running the installer is safe. Before replacing an existing command, it saves a timestamped backup under:
+
+```text
+/etc/autossl/backups/
+```
+
+## Setup
+
+Run:
 
 ```bash
 sudo autossl setup
@@ -59,6 +69,12 @@ During setup, you will be asked for:
 - reload command, auto-detected when possible
 - Cloudflare API token
 - Cloudflare Zone ID for the alias zone
+
+To replace an existing configuration, use:
+
+```bash
+sudo autossl setup --reconfigure
+```
 
 ## Cloudflare token permissions
 
@@ -77,7 +93,15 @@ Zone resources:
 Include - Specific zone - myautossl.com
 ```
 
-## Usage
+## Doctor
+
+Check the local configuration, required commands, `acme.sh`, and renewal scheduling:
+
+```bash
+sudo autossl doctor
+```
+
+## Check
 
 Check the delegated CNAME:
 
@@ -85,35 +109,57 @@ Check the delegated CNAME:
 autossl check -d domain.com
 ```
 
+The required delegated record has this form:
+
+```dns
+_acme-challenge.domain.com CNAME _acme-challenge.domain.com.myautossl.com
+```
+
+## Issue
+
 Issue a real certificate:
 
 ```bash
-autossl issue -d domain.com
+sudo autossl issue -d domain.com
 ```
 
-Issue a staging/test certificate:
+After confirming the delegated CNAME is correct, use `-y` to skip the interactive issue confirmation:
 
 ```bash
-autossl issue -d domain.com --staging
+sudo autossl issue -d domain.com -y
 ```
+
+## Issue With Staging
+
+Test the complete flow against the Let's Encrypt staging directory before requesting a production certificate:
+
+```bash
+sudo autossl issue -d domain.com --staging
+```
+
+`--staging` always uses Let's Encrypt staging, regardless of the configured default CA. Staging certificates are not trusted by browsers and must not be used in production.
+
+## Other Commands
 
 Renew manually:
 
 ```bash
-autossl renew -d domain.com
+sudo autossl renew -d domain.com
 ```
 
 Force renew:
 
 ```bash
-autossl renew -d domain.com --force
+sudo autossl renew -d domain.com --force
 ```
 
 Remove a domain from local AutoSSL/acme.sh storage:
 
 ```bash
-autossl remove -d domain.com
+sudo autossl remove -d domain.com
 ```
+
+Removal asks for confirmation. Use `-y` only when non-interactive removal is intended.
 
 List certificates:
 
@@ -121,17 +167,27 @@ List certificates:
 autossl list
 ```
 
-Check local configuration:
-
-```bash
-autossl doctor
-```
-
 Show version:
 
 ```bash
 autossl version
 ```
+
+## Uninstall
+
+Run:
+
+```bash
+sudo autossl uninstall
+```
+
+The command removes `/usr/local/bin/autossl`. It keeps all data by default and asks separately before removing each of:
+
+- `/etc/autossl` configuration and backups
+- `/root/.acme.sh` account and certificate data
+- `/etc/ssl/acme` installed certificates
+
+Only type `yes` when you intend to permanently remove that directory.
 
 ## Certificate paths
 

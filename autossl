@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.1-rc2"
+VERSION="1.0.0"
 CONFIG_DIR="/etc/autossl"
 CONFIG_FILE="$CONFIG_DIR/autossl.conf"
 CRED_FILE="$CONFIG_DIR/credentials.conf"
 BACKUP_DIR="$CONFIG_DIR/backups"
+INSTALL_PATH="/usr/local/bin/autossl"
+ACME_HOME="/root/.acme.sh"
+SSL_INSTALL_DIR="/etc/ssl/acme"
 
 usage(){ cat <<USAGE
 AutoSSL - acme.sh delegated DNS challenge helper
@@ -15,9 +18,10 @@ Usage:
   autossl check -d domain.com
   autossl issue -d domain.com [--staging] [--force] [-y]
   autossl renew -d domain.com [--force]
-  autossl remove -d domain.com
+  autossl remove -d domain.com [-y]
   autossl list
   autossl doctor
+  autossl uninstall
   autossl version
 
 Supported provider in v1.0: cloudflare
@@ -59,6 +63,12 @@ tty_secret(){
     echo
   fi
   printf -v "$__var" '%s' "$input"
+}
+
+confirm(){
+  local answer=""
+  tty_read answer "$1 Type yes to confirm"
+  [ "$answer" = "yes" ]
 }
 
 backup_existing(){
@@ -190,17 +200,70 @@ check_domain(){
 }
 
 issue_domain(){
+  local issue_server ans
+  local -a issue_args
   need_root; parse_domain "$@"; load_config; load_creds; export_provider_creds
   check_domain "$DOMAIN" || true
   if [ "$YES" != "yes" ]; then tty_read ans "Type yes to continue issuing certificate"; [ "$ans" = "yes" ] || exit 1; fi
   mkdir -p "$SSL_BASE/$DOMAIN"
-  "$ACME_BIN" --issue --dns "$DNS_PLUGIN" -d "$DOMAIN" -d "*.$DOMAIN" --challenge-alias "$DOMAIN.$ALIAS_ZONE" --server "$DEFAULT_CA" $STAGING $FORCE
+  issue_server="$DEFAULT_CA"
+  if [ -n "$STAGING" ]; then
+    issue_server="letsencrypt_test"
+    echo "Using Let's Encrypt staging directory."
+  fi
+  issue_args=(--issue --dns "$DNS_PLUGIN" -d "$DOMAIN" -d "*.$DOMAIN" --challenge-alias "$DOMAIN.$ALIAS_ZONE" --server "$issue_server")
+  [ -n "$FORCE" ] && issue_args+=("$FORCE")
+  "$ACME_BIN" "${issue_args[@]}"
   "$ACME_BIN" --install-cert -d "$DOMAIN" --key-file "$SSL_BASE/$DOMAIN/privkey.pem" --fullchain-file "$SSL_BASE/$DOMAIN/fullchain.pem" --reloadcmd "$RELOADCMD"
   echo "Installed: $SSL_BASE/$DOMAIN/fullchain.pem"
 }
 
-renew_domain(){ need_root; parse_domain "$@"; load_config; load_creds; export_provider_creds; "$ACME_BIN" --renew -d "$DOMAIN" $FORCE; "$ACME_BIN" --install-cert -d "$DOMAIN" --key-file "$SSL_BASE/$DOMAIN/privkey.pem" --fullchain-file "$SSL_BASE/$DOMAIN/fullchain.pem" --reloadcmd "$RELOADCMD"; }
-remove_domain(){ need_root; parse_domain "$@"; load_config; "$ACME_BIN" --remove -d "$DOMAIN" || true; rm -rf "/root/.acme.sh/${DOMAIN}_ecc" "$SSL_BASE/$DOMAIN"; echo "Removed $DOMAIN"; }
+renew_domain(){
+  local -a renew_args
+  need_root; parse_domain "$@"; load_config; load_creds; export_provider_creds
+  renew_args=(--renew -d "$DOMAIN")
+  [ -n "$FORCE" ] && renew_args+=("$FORCE")
+  "$ACME_BIN" "${renew_args[@]}"
+  "$ACME_BIN" --install-cert -d "$DOMAIN" --key-file "$SSL_BASE/$DOMAIN/privkey.pem" --fullchain-file "$SSL_BASE/$DOMAIN/fullchain.pem" --reloadcmd "$RELOADCMD"
+}
+remove_domain(){
+  need_root; parse_domain "$@"; load_config
+  if [ "$YES" != "yes" ] && ! confirm "Remove the certificate and local files for $DOMAIN?"; then
+    echo "Removal cancelled."
+    return 0
+  fi
+  "$ACME_BIN" --remove -d "$DOMAIN" || true
+  rm -rf -- "$ACME_HOME/${DOMAIN}_ecc" "$SSL_BASE/$DOMAIN"
+  echo "Removed $DOMAIN"
+}
+
+uninstall(){
+  need_root
+  echo "This removes the AutoSSL command. Data directories are kept by default."
+  rm -f -- "$INSTALL_PATH"
+  echo "Removed $INSTALL_PATH"
+
+  if confirm "Remove AutoSSL configuration and backups in $CONFIG_DIR?"; then
+    rm -rf -- "$CONFIG_DIR"
+    echo "Removed $CONFIG_DIR"
+  else
+    echo "Kept $CONFIG_DIR"
+  fi
+
+  if confirm "Remove acme.sh and its account/certificate data in $ACME_HOME?"; then
+    rm -rf -- "$ACME_HOME"
+    echo "Removed $ACME_HOME"
+  else
+    echo "Kept $ACME_HOME"
+  fi
+
+  if confirm "Remove installed certificates in $SSL_INSTALL_DIR?"; then
+    rm -rf -- "$SSL_INSTALL_DIR"
+    echo "Removed $SSL_INSTALL_DIR"
+  else
+    echo "Kept $SSL_INSTALL_DIR"
+  fi
+}
 
 doctor(){
   load_config
@@ -231,6 +294,7 @@ case "$cmd" in
   remove) remove_domain "$@" ;;
   list) load_config; "$ACME_BIN" --list ;;
   doctor) doctor ;;
+  uninstall) uninstall ;;
   version) echo "$VERSION" ;;
   help|-h|--help) usage ;;
   *) echo "Unknown command: $cmd"; usage; exit 1 ;;

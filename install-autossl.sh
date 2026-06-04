@@ -20,8 +20,12 @@ chmod 700 /etc/autossl /etc/ssl/acme "$BACKUP_DIR"
 
 if [ -f "$INSTALL_PATH" ]; then
   TS="$(date +%Y%m%d-%H%M%S)"
-  cp -a "$INSTALL_PATH" "$BACKUP_DIR/autossl.$TS.bak"
-  echo "Previous AutoSSL saved to $BACKUP_DIR/autossl.$TS.bak"
+  BACKUP_PATH="$BACKUP_DIR/autossl.$TS.bak"
+  while [ -e "$BACKUP_PATH" ]; do
+    BACKUP_PATH="$BACKUP_DIR/autossl.$TS.$RANDOM.bak"
+  done
+  cp -a "$INSTALL_PATH" "$BACKUP_PATH"
+  echo "Previous AutoSSL saved to $BACKUP_PATH"
 fi
 
 install -m 755 "$SCRIPT_DIR/autossl" "$INSTALL_PATH"
