@@ -129,6 +129,12 @@ After confirming the delegated CNAME is correct, use `-y` to skip the interactiv
 sudo autossl issue -d domain.com -y
 ```
 
+If the server cannot reach acme.sh public DNS/DoH check endpoints, make acme.sh wait a fixed time before validation:
+
+```bash
+sudo autossl issue -d example.com --dnssleep 120
+```
+
 ## Issue With Staging
 
 Test the complete flow against the Let's Encrypt staging directory before requesting a production certificate:

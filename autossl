@@ -16,7 +16,7 @@ AutoSSL - acme.sh delegated DNS challenge helper
 Usage:
   autossl setup [--reconfigure]
   autossl check -d domain.com
-  autossl issue -d domain.com [--staging] [--force] [-y]
+  autossl issue -d domain.com [--staging] [--force] [--dnssleep SECONDS] [-y]
   autossl renew -d domain.com [--force]
   autossl remove -d domain.com [-y]
   autossl list
@@ -31,6 +31,7 @@ USAGE
 
 valid_domain(){ [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]]; }
 valid_email(){ [[ "$1" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; }
+valid_positive_int(){ [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 need_root(){ [ "${EUID}" -eq 0 ] || { echo "Run as root."; exit 1; }; }
 load_config(){ [ -f "$CONFIG_FILE" ] || { echo "Missing config. Run: autossl setup"; exit 1; }; source "$CONFIG_FILE"; }
 load_creds(){ [ -f "$CRED_FILE" ] || { echo "Missing credentials. Run: autossl setup"; exit 1; }; source "$CRED_FILE"; }
@@ -174,12 +175,23 @@ export_provider_creds(){
 }
 
 parse_domain(){
-  DOMAIN=""; FORCE=""; STAGING=""; YES=""
+  local allow_dnssleep="no"
+  if [ "${1:-}" = "__allow_dnssleep" ]; then
+    allow_dnssleep="yes"
+    shift
+  fi
+  DOMAIN=""; FORCE=""; STAGING=""; YES=""; DNSSLEEP=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -d|--domain) DOMAIN="${2:-}"; shift 2 ;;
       --force) FORCE="--force"; shift ;;
       --staging) STAGING="--staging"; shift ;;
+      --dnssleep)
+        [ "$allow_dnssleep" = "yes" ] || { echo "Unknown option for this command: $1"; usage; exit 1; }
+        DNSSLEEP="${2:-}"
+        valid_positive_int "$DNSSLEEP" || { echo "Invalid --dnssleep value: ${DNSSLEEP:-empty}. Use a positive integer."; exit 1; }
+        shift 2
+        ;;
       -y|--yes) YES="yes"; shift ;;
       *) echo "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -202,7 +214,7 @@ check_domain(){
 issue_domain(){
   local issue_server ans
   local -a issue_args
-  need_root; parse_domain "$@"; load_config; load_creds; export_provider_creds
+  need_root; parse_domain "__allow_dnssleep" "$@"; load_config; load_creds; export_provider_creds
   check_domain "$DOMAIN" || true
   if [ "$YES" != "yes" ]; then tty_read ans "Type yes to continue issuing certificate"; [ "$ans" = "yes" ] || exit 1; fi
   mkdir -p "$SSL_BASE/$DOMAIN"
@@ -212,6 +224,7 @@ issue_domain(){
     echo "Using Let's Encrypt staging directory."
   fi
   issue_args=(--issue --dns "$DNS_PLUGIN" -d "$DOMAIN" -d "*.$DOMAIN" --challenge-alias "$DOMAIN.$ALIAS_ZONE" --server "$issue_server")
+  [ -n "$DNSSLEEP" ] && issue_args+=(--dnssleep "$DNSSLEEP")
   [ -n "$FORCE" ] && issue_args+=("$FORCE")
   "$ACME_BIN" "${issue_args[@]}"
   "$ACME_BIN" --install-cert -d "$DOMAIN" --key-file "$SSL_BASE/$DOMAIN/privkey.pem" --fullchain-file "$SSL_BASE/$DOMAIN/fullchain.pem" --reloadcmd "$RELOADCMD"
